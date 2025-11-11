@@ -1,0 +1,105 @@
+version: '3.8'
+
+services:
+  # Your existing services remain unchanged
+  user-service:
+    build: .
+    container_name: user-service
+    ports:
+      - "8081:8081"
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/StudyBuddyUserDB
+      - SPRING_DATASOURCE_USERNAME=postgres
+      - SPRING_DATASOURCE_PASSWORD=sam2424
+      - SPRING_JPA_HIBERNATE_DDL_AUTO=update
+      - SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI=http://keycloak:8080/realms/StudyBuddyRealm
+    depends_on:
+      - postgres
+      - keycloak
+    networks:
+      - user-network
+
+  postgres:
+    image: postgres:13
+    container_name: postgres
+    environment:
+      - POSTGRES_DB=StudyBuddyUserDB
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=sam2424
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - user-network
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:24.0
+    container_name: keycloak
+    command:
+      - start-dev
+    environment:
+      - KEYCLOAK_ADMIN=admin
+      - KEYCLOAK_ADMIN_PASSWORD=admin
+    ports:
+      - "8080:8080"
+    networks:
+      - user-network
+
+  # Add ContentService related services
+  content-db:
+    image: postgres:13
+    container_name: content-postgres
+    environment:
+      POSTGRES_DB: contentdb
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: sam2424
+    ports:
+      - "5433:5432"
+    volumes:
+      - content_db_data:/var/lib/postgresql/data
+    networks:
+      - user-network
+
+  content-service:
+    build: ./ContentService
+    container_name: content-service
+    ports:
+      - "8082:8080"
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://content-db:5432/contentdb
+      - SPRING_DATASOURCE_USERNAME=postgres
+      - SPRING_DATASOURCE_PASSWORD=sam2424
+      - MINIO_ENDPOINT=http://host.docker.internal:9000
+      - MINIO_ACCESS_KEY=5LOINNTM4WLINUNUXOR1
+      - MINIO_SECRET_KEY=CTfTZCCMHSezoWL4gh09Uaj65Z2UC2MjLDW8bPI7
+      - MINIO_BUCKET=contentpdfai
+      - SPRING_RABBITMQ_HOST=rabbitmq
+      - SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI=http://keycloak:8080/realms/StudyBuddyRealm
+    depends_on:
+      - content-db
+      - rabbitmq
+    networks:
+      - user-network
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    networks:
+      - user-network
+
+volumes:
+  postgres_data:
+  content_db_data:
+
+networks:
+  user-network:
+    driver: bridge
