@@ -39,7 +39,7 @@ A full-stack AI-powered study assistant application that helps students learn th
 
 ### 1. Clone the repository
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/samin1554/StudyAssistAI.git
 cd StudyAiApp
 ```
 
@@ -131,4 +131,4 @@ MIT
 
 ## 👥 Contributors
 
-Your name here
+Samiul Islam
