@@ -1,4 +1,5 @@
 package com.StudyAiApp.UserService.controllers;
+
 import com.StudyAiApp.UserService.config.KeycloakUtil;
 import com.StudyAiApp.UserService.dtos.UserRequest;
 import com.StudyAiApp.UserService.dtos.UserResponse;
@@ -41,7 +42,7 @@ public class UserController {
     @GetMapping("/validate/keycloak/{keycloakId}")
     public ResponseEntity<Boolean> validateUserByKeycloakId(@PathVariable String keycloakId) {
         try {
-            UserResponse user = userService.getUserProfileByKeycloakId(keycloakId);
+            userService.getUserProfileByKeycloakId(keycloakId);
             return ResponseEntity.ok(true);
         } catch (RuntimeException e) {
             return ResponseEntity.ok(false);

@@ -1,0 +1,87 @@
+import logging
+from app.models.database_models import Content
+from app.services.database import get_db, close_db
+from app.services.summarizer import summarization_service
+from app.services.pdf_reader import pdf_reader_service
+from app.utils.s3_utils import s3_service
+from app.config import S3_BUCKET_NAME
+
+logger = logging.getLogger(__name__)
+
+class ContentProcessor:
+    
+    @staticmethod
+    def process_content_by_id(content_id: int, max_length: int = 150, min_length: int = 50) -> dict:
+        db = get_db()
+        try:
+            content = db.query(Content).filter(Content.id == content_id).first()
+            
+            if not content:
+                raise ValueError(f"Content {content_id} not found")
+            
+            logger.info(f"Processing content {content_id}")
+            
+            if content.object_key and content.file_name:
+                pdf_bytes = s3_service.download_file(S3_BUCKET_NAME, content.object_key)
+                text, pages = pdf_reader_service.extract_text_from_bytes(pdf_bytes)
+                
+                if not text or len(text.strip()) == 0:
+                    raise ValueError("No text extracted from PDF")
+                
+                logger.info(f"Extracted {len(text)} chars from {pages} pages")
+                
+                summary = summarization_service.summarize(text, max_length, min_length)
+                
+                return {
+                    "content_id": content_id,
+                    "title": content.title,
+                    "summary": summary,
+                    "original_length": len(text),
+                    "summary_length": len(summary),
+                    "pages": pages,
+                    "content_type": "pdf",
+                    "status": "success"
+                }
+                
+            elif content.raw_text:
+                logger.info(f"Processing text: {len(content.raw_text)} chars")
+                
+                summary = summarization_service.summarize(content.raw_text, max_length, min_length)
+                
+                return {
+                    "content_id": content_id,
+                    "title": content.title,
+                    "summary": summary,
+                    "original_length": len(content.raw_text),
+                    "summary_length": len(summary),
+                    "content_type": "text",
+                    "status": "success"
+                }
+            else:
+                raise ValueError("No text or PDF to process")
+                
+        except Exception as e:
+            logger.error(f"Processing failed: {e}")
+            raise
+        finally:
+            close_db(db)
+    
+    @staticmethod
+    def get_all_content():
+        db = get_db()
+        try:
+            contents = db.query(Content).all()
+            return [
+                {
+                    "id": c.id,
+                    "title": c.title,
+                    "content_type": c.content_type,
+                    "status": c.status,
+                    "created_at": str(c.created_at)
+                }
+                for c in contents
+            ]
+        finally:
+            close_db(db)
+
+content_processor = ContentProcessor()

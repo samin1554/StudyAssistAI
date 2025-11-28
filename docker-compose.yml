@@ -100,6 +100,49 @@ volumes:
   postgres_data:
   content_db_data:
 
+  # Add AI Service
+  ai-service:
+    build: ./AIService
+    container_name: ai-service
+    ports:
+      - "8083:8000"
+    environment:
+      - DATABASE_URL=postgresql://postgres:sam2424@content-db:5432/contentdb
+      - S3_ENDPOINT_URL=http://host.docker.internal:9000
+      - S3_ACCESS_KEY=5LOINNTM4WLINUNUXOR1
+      - S3_SECRET_KEY=CTfTZCCMHSezoWL4gh09Uaj65Z2UC2MjLDW8bPI7
+      - S3_BUCKET_NAME=contentpdfai
+    depends_on:
+      - content-db
+    networks:
+      - user-network
+
+  # Add MCQ Service
+  mcq-service:
+    build: ./MCQService
+    container_name: mcq-service
+    ports:
+      - "8084:8000"
+    environment:
+      - DATABASE_URL=postgresql://postgres:sam2424@content-db:5432/contentdb
+      - S3_ENDPOINT_URL=http://host.docker.internal:9000
+      - S3_ACCESS_KEY=5LOINNTM4WLINUNUXOR1
+      - S3_SECRET_KEY=CTfTZCCMHSezoWL4gh09Uaj65Z2UC2MjLDW8bPI7
+      - S3_BUCKET_NAME=contentpdfai
+    depends_on:
+      - content-db
+    networks:
+      - user-network
+
+  # Frontend (React + Nginx)
+  frontend:
+    build: ./frontend
+    container_name: frontend
+    ports:
+      - "80:80"
+    networks:
+      - user-network
+
 networks:
   user-network:
     driver: bridge
