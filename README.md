@@ -2,7 +2,7 @@
 
 A full-stack AI-powered study assistant application that helps students learn through AI-generated summaries and practice quizzes.
 
-## 🚀 Features
+## Features
 
 - **AI Summarization**: Upload PDFs and get AI-generated summaries
 - **MCQ Generation**: Auto-generate practice quizzes from your study materials
@@ -10,7 +10,7 @@ A full-stack AI-powered study assistant application that helps students learn th
 - **Content Management**: Upload, organize, and manage study materials
 - **Modern UI**: Beautiful, responsive design with glassmorphism effects
 
-## 🏗️ Architecture
+## Architecture
 
 ### Backend Services
 - **UserService** (Java Spring Boot) - User management and authentication
@@ -35,7 +35,7 @@ A full-stack AI-powered study assistant application that helps students learn th
 - Java 17+ (for local backend development)
 - Python 3.9+ (for local AI services development)
 
-## 🚀 Quick Start
+## Quick Start
 
 ### 1. Clone the repository
 ```bash
@@ -98,11 +98,11 @@ Each service has its own README with setup instructions.
 | MinIO | 9000, 9001 | MinIO | Object storage |
 | RabbitMQ | 5672, 15672 | RabbitMQ | Message queue |
 
-## 🔒 Environment Variables
+## Environment Variables
 
 Key environment variables are configured in `docker-compose.yml`. For production, use a `.env` file.
 
-## 🎨 Tech Stack
+##  Tech Stack
 
 **Frontend:**
 - React 18
@@ -131,4 +131,5 @@ MIT
 
 ## 👥 Contributors
 
-Samiul Islam
+Sam Amin
+
