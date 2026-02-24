@@ -1,0 +1,768 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - '**'
+  pull_request:
+    branches:
+      - main
+      - develop
+  workflow_dispatch:
+    inputs:
+      skip_tests:
+        description: 'Skip test execution'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+      services:
+        description: 'Comma-separated list of services to build (or "all")'
+        required: false
+        default: 'all'
+        type: string
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}
+  RUN_PROP_TESTS: 'true'
+
+jobs:
+  change-detection:
+    name: Detect Changed Services
+    runs-on: ubuntu-latest
+    outputs:
+      java_changed: ${{ steps.service-types.outputs.java_changed }}
+      python_changed: ${{ steps.service-types.outputs.python_changed }}
+      frontend_changed: ${{ steps.service-types.outputs.frontend_changed }}
+      user_service_changed: ${{ steps.changed-files.outputs.user_service_any_changed }}
+      content_service_changed: ${{ steps.changed-files.outputs.content_service_any_changed }}
+      ai_service_changed: ${{ steps.changed-files.outputs.ai_service_any_changed }}
+      mcq_service_changed: ${{ steps.changed-files.outputs.mcq_service_any_changed }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect changed files
+        id: changed-files
+        uses: tj-actions/changed-files@v41
+        with:
+          files_yaml: |
+            user_service:
+              - UserService/**
+            content_service:
+              - ContentService/**
+            ai_service:
+              - AIService/**
+            mcq_service:
+              - MCQService/**
+            frontend:
+              - frontend/**
+
+      - name: Determine service type changes
+        id: service-types
+        run: |
+          # Determine if Java services changed (UserService or ContentService)
+          if [[ "${{ steps.changed-files.outputs.user_service_any_changed }}" == "true" || "${{ steps.changed-files.outputs.content_service_any_changed }}" == "true" ]]; then
+            echo "java_changed=true" >> $GITHUB_OUTPUT
+          else
+            echo "java_changed=false" >> $GITHUB_OUTPUT
+          fi
+          
+          # Determine if Python services changed (AIService or MCQService)
+          if [[ "${{ steps.changed-files.outputs.ai_service_any_changed }}" == "true" || "${{ steps.changed-files.outputs.mcq_service_any_changed }}" == "true" ]]; then
+            echo "python_changed=true" >> $GITHUB_OUTPUT
+          else
+            echo "python_changed=false" >> $GITHUB_OUTPUT
+          fi
+          
+          # Determine if Frontend changed
+          if [[ "${{ steps.changed-files.outputs.frontend_any_changed }}" == "true" ]]; then
+            echo "frontend_changed=true" >> $GITHUB_OUTPUT
+          else
+            echo "frontend_changed=false" >> $GITHUB_OUTPUT
+          fi
+
+  java-services:
+    name: Build Java Services
+    runs-on: ubuntu-latest
+    needs: [change-detection]
+    if: needs.change-detection.outputs.java_changed == 'true'
+    outputs:
+      user_service_built: ${{ steps.build-status.outputs.user_service_built }}
+      content_service_built: ${{ steps.build-status.outputs.content_service_built }}
+    env:
+      # Java service test environment variables
+      SPRING_DATASOURCE_URL: ${{ secrets.TEST_DATABASE_URL || 'jdbc:postgresql://localhost:5432/testdb' }}
+      SPRING_DATASOURCE_USERNAME: ${{ secrets.TEST_DB_USERNAME || 'postgres' }}
+      SPRING_DATASOURCE_PASSWORD: ${{ secrets.TEST_DB_PASSWORD || 'postgres' }}
+      SPRING_RABBITMQ_HOST: ${{ secrets.TEST_RABBITMQ_HOST || 'localhost' }}
+      SPRING_RABBITMQ_PORT: ${{ secrets.TEST_RABBITMQ_PORT || '5672' }}
+      SPRING_RABBITMQ_USERNAME: ${{ secrets.TEST_RABBITMQ_USERNAME || 'guest' }}
+      SPRING_RABBITMQ_PASSWORD: ${{ secrets.TEST_RABBITMQ_PASSWORD || 'guest' }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Cache Maven dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            ${{ runner.os }}-maven-
+
+      - name: Build and test UserService
+        id: build-and-test-userservice
+        if: needs.change-detection.outputs.user_service_changed == 'true'
+        working-directory: UserService
+        run: mvn clean verify
+
+      - name: Upload UserService test results
+        if: always() && needs.change-detection.outputs.user_service_changed == 'true'
+        uses: actions/upload-artifact@v3
+        with:
+          name: user-service-test-results
+          path: UserService/target/surefire-reports/
+
+      - name: Build and test ContentService
+        id: build-and-test-contentservice
+        if: needs.change-detection.outputs.content_service_changed == 'true'
+        working-directory: ContentService
+        run: mvn clean verify
+
+      - name: Upload ContentService test results
+        if: always() && needs.change-detection.outputs.content_service_changed == 'true'
+        uses: actions/upload-artifact@v3
+        with:
+          name: content-service-test-results
+          path: ContentService/target/surefire-reports/
+
+      - name: Set build status
+        id: build-status
+        if: always()
+        run: |
+          if [[ "${{ needs.change-detection.outputs.user_service_changed }}" == "true" && "${{ steps.build-and-test-userservice.outcome }}" == "success" ]]; then
+            echo "user_service_built=true" >> $GITHUB_OUTPUT
+          else
+            echo "user_service_built=false" >> $GITHUB_OUTPUT
+          fi
+          
+          if [[ "${{ needs.change-detection.outputs.content_service_changed }}" == "true" && "${{ steps.build-and-test-contentservice.outcome }}" == "success" ]]; then
+            echo "content_service_built=true" >> $GITHUB_OUTPUT
+          else
+            echo "content_service_built=false" >> $GITHUB_OUTPUT
+          fi
+
+  python-services:
+    name: Build Python Services
+    runs-on: ubuntu-latest
+    needs: [change-detection]
+    if: needs.change-detection.outputs.python_changed == 'true'
+    outputs:
+      ai_service_built: ${{ steps.build-status.outputs.ai_service_built }}
+      mcq_service_built: ${{ steps.build-status.outputs.mcq_service_built }}
+    env:
+      # Python service test environment variables
+      DATABASE_URL: ${{ secrets.TEST_DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/testdb' }}
+      S3_ENDPOINT_URL: ${{ secrets.TEST_S3_ENDPOINT_URL || 'http://localhost:9000' }}
+      S3_ACCESS_KEY: ${{ secrets.TEST_S3_ACCESS_KEY || 'testkey' }}
+      S3_SECRET_KEY: ${{ secrets.TEST_S3_SECRET_KEY || 'testsecret' }}
+      S3_BUCKET_NAME: ${{ secrets.TEST_S3_BUCKET_NAME || 'testbucket' }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.9
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install AIService dependencies
+        id: install-aiservice-deps
+        if: needs.change-detection.outputs.ai_service_changed == 'true'
+        working-directory: AIService
+        run: pip install -r requirements.txt
+
+      - name: Test AIService
+        id: test-aiservice
+        if: needs.change-detection.outputs.ai_service_changed == 'true'
+        working-directory: AIService
+        run: |
+          if [ -d "tests" ]; then
+            pytest tests --cov
+          else
+            echo "Tests directory does not exist yet, skipping tests"
+          fi
+
+      - name: Upload AIService coverage report
+        if: always() && needs.change-detection.outputs.ai_service_changed == 'true' && hashFiles('AIService/tests') != ''
+        uses: actions/upload-artifact@v3
+        with:
+          name: ai-service-coverage
+          path: AIService/htmlcov/
+
+      - name: Install MCQService dependencies
+        id: install-mcqservice-deps
+        if: needs.change-detection.outputs.mcq_service_changed == 'true'
+        run: pip install -r MCQService/requirements.txt
+
+      - name: Test MCQService
+        id: test-mcqservice
+        if: needs.change-detection.outputs.mcq_service_changed == 'true'
+        run: |
+          if [ -d "MCQService/tests" ]; then
+            pytest MCQService/tests --cov
+          else
+            echo "Tests directory does not exist yet, skipping tests"
+          fi
+
+      - name: Upload MCQService coverage report
+        if: always() && needs.change-detection.outputs.mcq_service_changed == 'true' && hashFiles('MCQService/tests') != ''
+        uses: actions/upload-artifact@v3
+        with:
+          name: mcq-service-coverage
+          path: MCQService/htmlcov/
+
+      - name: Set build status
+        id: build-status
+        if: always()
+        run: |
+          if [[ "${{ needs.change-detection.outputs.ai_service_changed }}" == "true" && "${{ steps.install-aiservice-deps.outcome }}" == "success" && "${{ steps.test-aiservice.outcome }}" == "success" ]]; then
+            echo "ai_service_built=true" >> $GITHUB_OUTPUT
+          else
+            echo "ai_service_built=false" >> $GITHUB_OUTPUT
+          fi
+          
+          if [[ "${{ needs.change-detection.outputs.mcq_service_changed }}" == "true" && "${{ steps.install-mcqservice-deps.outcome }}" == "success" && "${{ steps.test-mcqservice.outcome }}" == "success" ]]; then
+            echo "mcq_service_built=true" >> $GITHUB_OUTPUT
+          else
+            echo "mcq_service_built=false" >> $GITHUB_OUTPUT
+          fi
+
+  frontend:
+    name: Build Frontend
+    runs-on: ubuntu-latest
+    needs: [change-detection]
+    if: needs.change-detection.outputs.frontend_changed == 'true'
+    outputs:
+      frontend_built: ${{ steps.build-status.outputs.frontend_built }}
+    env:
+      # Frontend test environment variables
+      VITE_API_URL: ${{ secrets.TEST_API_URL || 'http://localhost:8080' }}
+      NODE_ENV: test
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Cache npm dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-
+
+      - name: Install dependencies
+        id: install-deps
+        working-directory: frontend
+        run: npm ci
+
+      - name: Run linting
+        id: lint
+        working-directory: frontend
+        run: npm run lint
+
+      - name: Run tests
+        id: test
+        working-directory: frontend
+        run: npm test
+
+      - name: Build frontend
+        id: build
+        working-directory: frontend
+        run: npm run build
+
+      - name: Upload build artifacts
+        if: success()
+        uses: actions/upload-artifact@v3
+        with:
+          name: frontend-build
+          path: frontend/dist/
+
+      - name: Set build status
+        id: build-status
+        if: always()
+        run: |
+          if [[ "${{ steps.install-deps.outcome }}" == "success" && "${{ steps.lint.outcome }}" == "success" && "${{ steps.test.outcome }}" == "success" && "${{ steps.build.outcome }}" == "success" ]]; then
+            echo "frontend_built=true" >> $GITHUB_OUTPUT
+          else
+            echo "frontend_built=false" >> $GITHUB_OUTPUT
+          fi
+
+  docker-build:
+    name: Build Docker Images
+    runs-on: ubuntu-latest
+    needs: [change-detection, java-services, python-services, frontend]
+    if: always() && !cancelled()
+    strategy:
+      matrix:
+        include:
+          - name: user-service
+            context: ./UserService
+            dockerfile: ./UserService/Dockerfile
+            condition: ${{ needs.java-services.outputs.user_service_built == 'true' }}
+          - name: content-service
+            context: ./ContentService
+            dockerfile: ./ContentService/Dockerfile
+            condition: ${{ needs.java-services.outputs.content_service_built == 'true' }}
+          - name: ai-service
+            context: ./AIService
+            dockerfile: ./AIService/Dockerfile
+            condition: ${{ needs.python-services.outputs.ai_service_built == 'true' }}
+          - name: mcq-service
+            context: ./MCQService
+            dockerfile: ./MCQService/Dockerfile
+            condition: ${{ needs.python-services.outputs.mcq_service_built == 'true' }}
+          - name: frontend
+            context: ./frontend
+            dockerfile: ./frontend/Dockerfile
+            condition: ${{ needs.frontend.outputs.frontend_built == 'true' }}
+    steps:
+      - name: Checkout code
+        if: matrix.condition == 'true'
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        if: matrix.condition == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Cache Docker layers
+        if: matrix.condition == 'true'
+        uses: actions/cache@v3
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-docker-${{ matrix.service.name }}-${{ hashFiles(matrix.service.dockerfile) }}
+          restore-keys: |
+            ${{ runner.os }}-docker-${{ matrix.service.name }}-
+            ${{ runner.os }}-docker-
+
+      - name: Generate Docker metadata
+        if: matrix.condition == 'true'
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_PREFIX }}/${{ matrix.name }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix=sha-
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build Docker image
+        if: matrix.condition == 'true'
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          push: false
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.repositoryUrl }}
+            org.opencontainers.image.created=${{ github.event.head_commit.timestamp }}
+            com.github.workflow.run-id=${{ github.run_id }}
+            com.github.workflow.run-number=${{ github.run_number }}
+            com.github.ref=${{ github.ref }}
+            com.github.sha=${{ github.sha }}
+          build-args: |
+            COMMIT_SHA=${{ github.sha }}
+            BUILD_TIMESTAMP=${{ github.event.head_commit.timestamp }}
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
+
+      - name: Move cache
+        if: matrix.condition == 'true'
+        run: |
+          rm -rf /tmp/.buildx-cache
+          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
+
+  change-detection-prop-tests:
+    name: Change-Detection Property Tests
+    runs-on: ubuntu-latest
+    needs: [change-detection]
+    if: ${{ env.RUN_PROP_TESTS == 'true' }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Run change-detection property test
+        run: |
+          bash .github/scripts/change-detection-props-test.sh true false true false false
+
+  image-tagging-props:
+    name: Image-Tagging Property Tests
+    runs-on: ubuntu-latest
+    needs: [docker-build]
+    if: ${{ env.RUN_PROP_TESTS == 'true' }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Run image tagging property test
+        run: |
+          bash .github/scripts/prop-test-image-tagging.sh feature/add-service 'latest,branch-tag'
+
+  manifest-metadata-props:
+    name: Manifest Metadata Property Tests
+    runs-on: ubuntu-latest
+    needs: [docker-build]
+    if: ${{ env.RUN_PROP_TESTS == 'true' }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Run manifest metadata property test
+        run: |
+          bash .github/scripts/prop-test-metadata-labels.sh
+
+  deployment-manifest-props:
+    name: Deployment Manifest Property Tests
+    runs-on: ubuntu-latest
+    needs: [deployment-manifest]
+    if: ${{ env.RUN_PROP_TESTS == 'true' }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Run deployment manifest property test
+        run: |
+          bash .github/scripts/prop-test-deployment-manifest.sh deployment-manifest.json
+
+  build-summary:
+    name: Build Summary and Failure Aggregation
+    runs-on: ubuntu-latest
+    needs: [change-detection, java-services, python-services, frontend, docker-build]
+    if: always() && !cancelled()
+    outputs:
+      overall_status: ${{ steps.aggregate.outputs.overall_status }}
+    steps:
+      - name: Aggregate build results
+        id: aggregate
+        run: |
+          echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Workflow Run:** ${{ github.run_id }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Branch:** ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Service Build Status" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Service | Build Status | Docker Build |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|--------------|--------------|" >> $GITHUB_STEP_SUMMARY
+          
+          # Track overall failure status
+          OVERALL_FAILURE=false
+          
+          # UserService
+          if [[ "${{ needs.change-detection.outputs.user_service_changed }}" == "true" ]]; then
+            if [[ "${{ needs.java-services.outputs.user_service_built }}" == "true" ]]; then
+              echo "| UserService | ✅ Success | ✅ Built |" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "| UserService | ❌ Failed | ⏭️ Skipped |" >> $GITHUB_STEP_SUMMARY
+              OVERALL_FAILURE=true
+            fi
+          else
+            echo "| UserService | ⏭️ No changes | ⏭️ Skipped |" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          # ContentService
+          if [[ "${{ needs.change-detection.outputs.content_service_changed }}" == "true" ]]; then
+            if [[ "${{ needs.java-services.outputs.content_service_built }}" == "true" ]]; then
+              echo "| ContentService | ✅ Success | ✅ Built |" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "| ContentService | ❌ Failed | ⏭️ Skipped |" >> $GITHUB_STEP_SUMMARY
+              OVERALL_FAILURE=true
+            fi
+          else
+            echo "| ContentService | ⏭️ No changes | ⏭️ Skipped |" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          # AIService
+          if [[ "${{ needs.change-detection.outputs.ai_service_changed }}" == "true" ]]; then
+            if [[ "${{ needs.python-services.outputs.ai_service_built }}" == "true" ]]; then
+              echo "| AIService | ✅ Success | ✅ Built |" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "| AIService | ❌ Failed | ⏭️ Skipped |" >> $GITHUB_STEP_SUMMARY
+              OVERALL_FAILURE=true
+            fi
+          else
+            echo "| AIService | ⏭️ No changes | ⏭️ Skipped |" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          # MCQService
+          if [[ "${{ needs.change-detection.outputs.mcq_service_changed }}" == "true" ]]; then
+            if [[ "${{ needs.python-services.outputs.mcq_service_built }}" == "true" ]]; then
+              echo "| MCQService | ✅ Success | ✅ Built |" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "| MCQService | ❌ Failed | ⏭️ Skipped |" >> $GITHUB_STEP_SUMMARY
+              OVERALL_FAILURE=true
+            fi
+          else
+            echo "| MCQService | ⏭️ No changes | ⏭️ Skipped |" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          # Frontend
+          if [[ "${{ needs.change-detection.outputs.frontend_changed }}" == "true" ]]; then
+            if [[ "${{ needs.frontend.outputs.frontend_built }}" == "true" ]]; then
+              echo "| Frontend | ✅ Success | ✅ Built |" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "| Frontend | ❌ Failed | ⏭️ Skipped |" >> $GITHUB_STEP_SUMMARY
+              OVERALL_FAILURE=true
+            fi
+          else
+            echo "| Frontend | ⏭️ No changes | ⏭️ Skipped |" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Check docker-build job status
+          if [[ "${{ needs.docker-build.result }}" == "failure" ]]; then
+            echo "⚠️ **Docker build job encountered failures**" >> $GITHUB_STEP_SUMMARY
+            OVERALL_FAILURE=true
+          fi
+          
+          # Set output for overall status
+          if [[ "$OVERALL_FAILURE" == "true" ]]; then
+            echo "overall_status=failure" >> $GITHUB_OUTPUT
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "## ❌ Workflow Result: FAILED" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "One or more services failed to build. Please check the logs above for details." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "overall_status=success" >> $GITHUB_OUTPUT
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "## ✅ Workflow Result: SUCCESS" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "All services built successfully!" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Fail workflow if any service failed
+        if: steps.aggregate.outputs.overall_status == 'failure'
+        run: |
+          echo "::error::One or more services failed to build. Failing the workflow."
+          exit 1
+
+  push-images:
+    name: Push Images to Registry
+    runs-on: ubuntu-latest
+    needs: [change-detection, java-services, python-services, frontend, docker-build, build-summary]
+    if: success() && needs.docker-build.result == 'success' && needs.build-summary.outputs.overall_status == 'success'
+    environment:
+      name: ${{ github.ref == 'refs/heads/main' && 'production' || 'staging' }}
+      url: ${{ github.ref == 'refs/heads/main' && 'https://production.example.com' || 'https://staging.example.com' }}
+    strategy:
+      matrix:
+        include:
+          - name: user-service
+            context: ./UserService
+            dockerfile: ./UserService/Dockerfile
+            condition: ${{ needs.java-services.outputs.user_service_built == 'true' }}
+          - name: content-service
+            context: ./ContentService
+            dockerfile: ./ContentService/Dockerfile
+            condition: ${{ needs.java-services.outputs.content_service_built == 'true' }}
+          - name: ai-service
+            context: ./AIService
+            dockerfile: ./AIService/Dockerfile
+            condition: ${{ needs.python-services.outputs.ai_service_built == 'true' }}
+          - name: mcq-service
+            context: ./MCQService
+            dockerfile: ./MCQService/Dockerfile
+            condition: ${{ needs.python-services.outputs.mcq_service_built == 'true' }}
+          - name: frontend
+            context: ./frontend
+            dockerfile: ./frontend/Dockerfile
+            condition: ${{ needs.frontend.outputs.frontend_built == 'true' }}
+    steps:
+      - name: Checkout code
+        if: matrix.condition == 'true'
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        if: matrix.condition == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        if: matrix.condition == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate Docker metadata
+        if: matrix.condition == 'true'
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_PREFIX }}/${{ matrix.name }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix=sha-
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build and push Docker image with retry
+        if: matrix.condition == 'true'
+        id: docker-push
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.repositoryUrl }}
+            org.opencontainers.image.created=${{ github.event.head_commit.timestamp }}
+            com.github.workflow.run-id=${{ github.run_id }}
+            com.github.workflow.run-number=${{ github.run_number }}
+            com.github.ref=${{ github.ref }}
+            com.github.sha=${{ github.sha }}
+          build-args: |
+            COMMIT_SHA=${{ github.sha }}
+            BUILD_TIMESTAMP=${{ github.event.head_commit.timestamp }}
+
+      - name: Retry push on failure (attempt 2)
+        if: matrix.condition == 'true' && failure() && steps.docker-push.outcome == 'failure'
+        id: docker-push-retry-1
+        run: |
+          echo "First push attempt failed, retrying after 10 seconds..."
+          sleep 10
+          docker buildx build \
+            --context ${{ matrix.context }} \
+            --file ${{ matrix.dockerfile }} \
+            --push \
+            --tag $(echo "${{ steps.meta.outputs.tags }}" | tr '\n' ' ' | sed 's/ / --tag /g') \
+            --label org.opencontainers.image.revision=${{ github.sha }} \
+            --label org.opencontainers.image.source=${{ github.repositoryUrl }} \
+            --label org.opencontainers.image.created=${{ github.event.head_commit.timestamp }} \
+            --label com.github.workflow.run-id=${{ github.run_id }} \
+            --label com.github.workflow.run-number=${{ github.run_number }} \
+            --label com.github.ref=${{ github.ref }} \
+            --label com.github.sha=${{ github.sha }} \
+            --build-arg COMMIT_SHA=${{ github.sha }} \
+            --build-arg BUILD_TIMESTAMP=${{ github.event.head_commit.timestamp }}
+
+      - name: Retry push on failure (attempt 3)
+        if: matrix.condition == 'true' && failure() && steps.docker-push-retry-1.outcome == 'failure'
+        id: docker-push-retry-2
+        run: |
+          echo "Second push attempt failed, retrying after 30 seconds..."
+          sleep 30
+          docker buildx build \
+            --context ${{ matrix.context }} \
+            --file ${{ matrix.dockerfile }} \
+            --push \
+            --tag $(echo "${{ steps.meta.outputs.tags }}" | tr '\n' ' ' | sed 's/ / --tag /g') \
+            --label org.opencontainers.image.revision=${{ github.sha }} \
+            --label org.opencontainers.image.source=${{ github.repositoryUrl }} \
+            --label org.opencontainers.image.created=${{ github.event.head_commit.timestamp }} \
+            --label com.github.workflow.run-id=${{ github.run_id }} \
+            --label com.github.workflow.run-number=${{ github.run_number }} \
+            --label com.github.ref=${{ github.ref }} \
+            --label com.github.sha=${{ github.sha }} \
+            --build-arg COMMIT_SHA=${{ github.sha }} \
+            --build-arg BUILD_TIMESTAMP=${{ github.event.head_commit.timestamp }}
+
+      - name: Verify image manifest
+        if: matrix.condition == 'true' && (success() || steps.docker-push-retry-1.outcome == 'success' || steps.docker-push-retry-2.outcome == 'success')
+        run: |
+          echo "Verifying image manifest for ${{ matrix.name }}..."
+          # Extract the first tag for verification
+          PRIMARY_TAG=$(echo "${{ steps.meta.outputs.tags }}" | head -n 1)
+          echo "Inspecting manifest for: $PRIMARY_TAG"
+          
+          # Verify the image manifest exists
+          docker buildx imagetools inspect $PRIMARY_TAG
+          
+          # Verify all tags point to the same image
+          echo "Verifying all tags..."
+          for tag in ${{ steps.meta.outputs.tags }}; do
+            echo "Checking tag: $tag"
+            docker buildx imagetools inspect $tag > /dev/null 2>&1
+            if [ $? -eq 0 ]; then
+              echo "✓ Tag verified: $tag"
+            else
+              echo "✗ Tag verification failed: $tag"
+              exit 1
+            fi
+          done
+          
+          echo "All image tags verified successfully for ${{ matrix.name }}"
+
+  deployment-manifest:
+    name: Generate Deployment Manifest
+    runs-on: ubuntu-latest
+    needs: [change-detection, java-services, python-services, frontend, build-summary, push-images]
+    if: always() && needs.push-images.result == 'success' && needs.build-summary.outputs.overall_status == 'success'
+    environment:
+      name: ${{ github.ref == 'refs/heads/main' && 'production' || 'staging' }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Generate deployment manifest
+        env:
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_SHA: ${{ github.sha }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          IMAGE_PREFIX: ${{ env.IMAGE_PREFIX }}
+          USER_SERVICE_BUILT: ${{ needs.java-services.outputs.user_service_built || 'false' }}
+          CONTENT_SERVICE_BUILT: ${{ needs.java-services.outputs.content_service_built || 'false' }}
+          AI_SERVICE_BUILT: ${{ needs.python-services.outputs.ai_service_built || 'false' }}
+          MCQ_SERVICE_BUILT: ${{ needs.python-services.outputs.mcq_service_built || 'false' }}
+          FRONTEND_BUILT: ${{ needs.frontend.outputs.frontend_built || 'false' }}
+        run: |
+          bash .github/scripts/generate-manifest.sh
+
+      - name: Display manifest in workflow summary
+        run: |
+          echo "## Deployment Manifest" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Build ID:** ${{ github.run_id }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit SHA:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Branch:** ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Built Images" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```json' >> $GITHUB_STEP_SUMMARY
+          cat deployment-manifest.json >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload deployment manifest
+        uses: actions/upload-artifact@v3
+        with:
+          name: deployment-manifest
+          path: deployment-manifest.json
+          retention-days: 30
