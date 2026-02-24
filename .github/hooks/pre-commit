@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Pre-commit hook: validate GitHub Actions workflows before commit
+# This script assumes:
+# - You have the existing validator script at .github/scripts/validate-workflows.sh
+# - actionlint can be installed on the runner/machine running the hook
+
+STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACM | grep -E "\\.github/workflows/.*\\.(yml|yaml)$" || true)
+
+if [ -z "${STAGED_FILES}" ]; then
+  # No workflow files touched; allow commit
+  exit 0
+fi
+
+echo "Running workflow validation for touched files..."
+# Best-effort: run the project-wide validator to ensure all workflows are sane.
+# If you prefer, you can run individual file checks, but the provided validator
+# script already covers syntax, linting, and anti-patterns across all workflows.
+bash ".github/scripts/validate-workflows.sh" || {
+  echo "❌ Workflow validation failed. Commit aborted."
+  exit 1
+}
+
+echo "✓ Workflow validation passed."
+exit 0
