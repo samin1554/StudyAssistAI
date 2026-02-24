@@ -34,9 +34,9 @@ if [ -n "$PYTHON_ACTUAL" ]; then
     echo "ERROR: PYTHON_CHANGED mismatch: got $PYTHON_ACTUAL, expected $PYTHON_EXPECTED"; exit 1
   fi
 fi
-if [ -n "$FE_ACTUAL" ]; then
-  if [ "$FE_ACTUAL" != "$FE_EXPECTED" ]; then
-    echo "ERROR: FRONTEND_CHANGED mismatch: got $FE_ACTUAL, expected $FE_EXPECTED"; exit 1
+if [ -n "$FRONTEND_ACTUAL" ]; then
+  if [ "$FRONTEND_ACTUAL" != "$FE_EXPECTED" ]; then
+    echo "ERROR: FRONTEND_CHANGED mismatch: got $FRONTEND_ACTUAL, expected $FE_EXPECTED"; exit 1
   fi
 fi
 
